@@ -1,0 +1,25 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: Inter, "Noto Sans Khmer", Battambang, system-ui, sans-serif;
+  color: #17243a;
+  background: #f5f7fb;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 360px; min-height: 100vh; }
+button, input, select, textarea { font: inherit; }
+button { cursor: pointer; }
+.khmer { font-family: "Noto Sans Khmer", Battambang, system-ui, sans-serif; }
+.scrollbar-hide::-webkit-scrollbar { display: none; }
+.input { @apply w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs text-ink outline-none transition placeholder:text-slate-400 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100; }
+.animate-in { animation: fade-in .25s ease-out both; }
+@keyframes fade-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+@media print {
+  .no-print { display: none !important; }
+  body { background: white; }
+}
