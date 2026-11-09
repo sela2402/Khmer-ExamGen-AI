@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDownToLine, ArrowLeft, ArrowRight, BookOpen, Check, CheckCircle2, ChevronDown,
-  ClipboardList, Clock3, FileText, GraduationCap, LayoutDashboard, LoaderCircle, Menu,
-  MessageCircle, Plus, RefreshCw, Sparkles, Upload, X,
+  ClipboardList, Clock3, FileText, GraduationCap, LayoutDashboard, LoaderCircle, LogOut, Menu,
+  MessageCircle, Plus, RefreshCw, Sparkles, Trash2, Upload, X,
 } from "lucide-react";
+import { supabase } from "./utils/supabase";
 
 const questionTypes = ["Multiple Choice", "True or False", "Fill in the Blanks", "Short Answer", "Essay", "Problem Solving"];
 const subjects = ["Khmer Literature", "Mathematics", "Physics", "Chemistry", "Biology", "History", "Geography", "English", "Other"];
@@ -29,7 +30,9 @@ const copy = {
     chat: "ExamGen assistant", chatIntro: "I’ll guide you through preparing a paper from your lesson.",
     chatPlaceholder: "Ask about your exam...", send: "Send", total: "Total", questions: "Questions",
     minutes: "minutes", noLessons: "No lesson materials yet", noExams: "No examinations yet",
-    start: "Start by uploading a lesson", delete: "Delete", edit: "Edit question",
+    start: "Start by uploading a lesson", delete: "Delete", deleteConfirm: "Delete this examination? This cannot be undone.",
+    deleted: "Examination deleted.", deleteLessonConfirm: "Delete this uploaded lesson? Exams made from it will remain, but lesson-based regeneration will no longer work.",
+    lessonDeleted: "Uploaded lesson deleted.", edit: "Edit question",
     remove: "Remove question", subjectOther: "Enter subject", answer: "Answer (teacher only)",
     explanation: "Explanation", rubric: "Grading criteria", options: "Answer choices",
     original: "Grounded in your uploaded lesson", emptyChat: "Upload a lesson and tell me your grade and subject to get started.",
@@ -50,7 +53,11 @@ const copy = {
     chat: "ជំនួយការ ExamGen", chatIntro: "ខ្ញុំនឹងជួយរៀបចំវិញ្ញាសាពីមេរៀនរបស់អ្នក។",
     chatPlaceholder: "សួរអំពីវិញ្ញាសារបស់អ្នក...", send: "ផ្ញើ", total: "សរុប", questions: "សំណួរ",
     minutes: "នាទី", noLessons: "មិនទាន់មានមេរៀនទេ", noExams: "មិនទាន់មានវិញ្ញាសាទេ",
-    start: "ចាប់ផ្ដើមដោយបញ្ចូលមេរៀន", delete: "លុប", edit: "កែសំណួរ",
+    start: "ចាប់ផ្ដើមដោយបញ្ចូលមេរៀន", delete: "លុប",
+    deleteConfirm: "តើអ្នកប្រាកដថាចង់លុបវិញ្ញាសានេះទេ? ការលុបនេះមិនអាចត្រឡប់វិញបានទេ។",
+    deleted: "បានលុបវិញ្ញាសា។",
+    deleteLessonConfirm: "តើអ្នកប្រាកដថាចង់លុបមេរៀនដែលបានបញ្ចូលនេះទេ? វិញ្ញាសាដែលបានបង្កើតនឹងនៅដដែល ប៉ុន្តែមិនអាចបង្កើតសំណួរឡើងវិញដោយប្រើមេរៀននេះបានទេ។",
+    lessonDeleted: "បានលុបមេរៀនដែលបានបញ្ចូល។", edit: "កែសំណួរ",
     remove: "លុបសំណួរ", subjectOther: "បញ្ចូលមុខវិជ្ជា", answer: "ចម្លើយ (សម្រាប់គ្រូប៉ុណ្ណោះ)",
     explanation: "ការពន្យល់", rubric: "លក្ខណៈវិនិច្ឆ័យដាក់ពិន្ទុ", options: "ជម្រើសចម្លើយ",
     original: "ផ្អែកលើមេរៀនដែលបានបញ្ចូល", emptyChat: "បញ្ចូលមេរៀន ហើយប្រាប់ខ្ញុំពីថ្នាក់ និងមុខវិជ្ជា ដើម្បីចាប់ផ្តើម។",
@@ -58,10 +65,39 @@ const copy = {
 };
 
 async function api(url, options = {}) {
-  const response = await fetch(url, options);
+  let response;
+  try {
+    const { data, error } = await supabase.auth.getSession();
+    if (error) throw new Error(error.message);
+    const headers = new Headers(options.headers);
+    if (data.session?.access_token) {
+      headers.set("Authorization", `Bearer ${data.session.access_token}`);
+    }
+    response = await fetch(url, { ...options, headers });
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error("Cannot reach the API. Start it with `uvicorn app.main:app --reload` from the backend folder.");
+    }
+    throw error;
+  }
   if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    throw new Error(data.detail || `Request failed (${response.status})`);
+    const isJson = response.headers.get("content-type")?.includes("application/json");
+    const data = isJson ? await response.json() : {};
+    const detail = data.detail;
+    if (!detail && response.status >= 500) {
+      throw new Error("The API server is unavailable. Start it with `uvicorn app.main:app --reload` from the backend folder.");
+    }
+    const message = typeof detail === "string"
+      ? detail
+      : Array.isArray(detail)
+        ? detail.map((item) => {
+          const location = Array.isArray(item.loc) ? item.loc.filter((part) => part !== "body").join(" → ") : "";
+          return [location, item.msg || JSON.stringify(item)].filter(Boolean).join(": ");
+        }).join("; ")
+        : detail && typeof detail === "object"
+          ? detail.message || detail.error?.message || JSON.stringify(detail)
+          : `Request failed (${response.status})`;
+    throw new Error(message);
   }
   return response;
 }
@@ -69,6 +105,9 @@ async function api(url, options = {}) {
 const cx = (...values) => values.filter(Boolean).join(" ");
 
 function App() {
+  const [authSession, setAuthSession] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authError, setAuthError] = useState("");
   const [language, setLanguage] = useState("en");
   const t = copy[language];
   const [page, setPage] = useState("Dashboard");
@@ -92,15 +131,51 @@ function App() {
   const isKhmer = language === "km";
   const sumMarks = useMemo(() => exam?.questions?.reduce((sum, q) => sum + Number(q.marks || 0), 0) || 0, [exam]);
 
+  useEffect(() => {
+    let active = true;
+    supabase.auth.getSession().then(({ data, error: sessionError }) => {
+      if (!active) return;
+      if (sessionError) setAuthError(sessionError.message);
+      setAuthSession(data.session);
+      setAuthLoading(false);
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setAuthSession(session);
+      setAuthError("");
+      setAuthLoading(false);
+    });
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
   async function refresh() {
     try {
       const [lessonResponse, examResponse] = await Promise.all([api("/api/lessons"), api("/api/exams")]);
-      setLessons(await lessonResponse.json());
+      const availableLessons = await lessonResponse.json();
+      setLessons(availableLessons);
+      setLessonId((current) => availableLessons.some((lesson) => lesson.id === current)
+        ? current
+        : availableLessons[0]?.id || "");
       setExams(await examResponse.json());
     } catch (e) { setError(e.message); }
   }
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => {
+    if (authSession) {
+      refresh();
+    } else if (!authLoading) {
+      setLessons([]);
+      setExams([]);
+      setExam(null);
+    }
+  }, [authLoading, authSession]);
   useEffect(() => { chatEnd.current?.scrollIntoView({ behavior: "smooth" }); }, [chatMessages]);
+
+  async function signOut() {
+    const { error: signOutError } = await supabase.auth.signOut();
+    if (signOutError) setError(signOutError.message);
+  }
 
   function navigate(nextPage) {
     setPage(nextPage);
@@ -147,6 +222,31 @@ function App() {
         body: JSON.stringify(Object.fromEntries(["title", "grade", "subject", "total_marks", "duration_minutes", "language", "questions"].map((key) => [key, updated[key]]))) });
       setExam(await response.json()); setNotice("Changes saved."); await refresh(); return true;
     } catch (e) { setError(e.message); return false; }
+    finally { setBusy(""); }
+  }
+  async function deleteExam(item) {
+    if (!window.confirm(`${t.deleteConfirm}\n\n${item.title}`)) return;
+    setBusy(`delete-${item.id}`); setError(""); setNotice("");
+    try {
+      await api(`/api/exams/${item.id}`, { method: "DELETE" });
+      setExams((current) => current.filter((savedExam) => savedExam.id !== item.id));
+      if (exam?.id === item.id) {
+        setExam(null);
+        setPage("Dashboard");
+      }
+      setNotice(t.deleted);
+    } catch (e) { setError(e.message); }
+    finally { setBusy(""); }
+  }
+  async function deleteLesson(item) {
+    if (!window.confirm(`${t.deleteLessonConfirm}\n\n${item.filename}`)) return;
+    setBusy(`delete-lesson-${item.id}`); setError(""); setNotice("");
+    try {
+      await api(`/api/lessons/${item.id}`, { method: "DELETE" });
+      setLessons((current) => current.filter((lesson) => lesson.id !== item.id));
+      if (lessonId === item.id) setLessonId(lessons.find((lesson) => lesson.id !== item.id)?.id || "");
+      setNotice(t.lessonDeleted);
+    } catch (e) { setError(e.message); }
     finally { setBusy(""); }
   }
   async function regenerate(index) {
@@ -221,6 +321,13 @@ function App() {
   ];
   const activeNav = page === "Generate examination" ? "Generate exam" : page;
 
+  if (authLoading) {
+    return <div className="grid min-h-screen place-items-center text-sm text-slate-500">Checking your session...</div>;
+  }
+  if (!authSession) {
+    return <SignInPage initialError={authError} />;
+  }
+
   return (
     <div className={cx("min-h-screen", isKhmer && "khmer")}>
       <aside className={cx("fixed inset-y-0 left-0 z-30 flex w-[248px] flex-col border-r border-slate-100 bg-white px-5 py-6 transition-transform lg:translate-x-0 no-print", mobileMenu ? "translate-x-0" : "-translate-x-full")}>
@@ -238,7 +345,10 @@ function App() {
         </div>
         <div className="mt-9">
           <div className="mb-3 flex items-center justify-between px-3"><p className="text-[10px] font-bold uppercase tracking-[.17em] text-slate-400">{isKhmer ? "ថ្មីៗ" : "Recent exams"}</p><button aria-label="Create exam" onClick={() => navigate("Generate examination")} className="rounded-md p-1 text-slate-400 hover:bg-slate-100"><Plus size={15} /></button></div>
-          <div className="space-y-1">{exams.slice(0, 4).map((item) => <button key={item.id} onClick={() => { setExam(item); navigate("Examination Preview"); }} className="flex w-full items-center gap-2.5 truncate rounded-lg px-3 py-2 text-left text-xs text-slate-500 hover:bg-slate-50"><FileText size={14} className="shrink-0 text-slate-400" /><span className="truncate">{item.title}</span></button>)}</div>
+          <div className="space-y-1">{exams.slice(0, 4).map((item) => <div key={item.id} className="flex items-center rounded-lg hover:bg-slate-50">
+            <button onClick={() => { setExam(item); navigate("Examination Preview"); }} className="flex min-w-0 flex-1 items-center gap-2.5 truncate px-3 py-2 text-left text-xs text-slate-500"><FileText size={14} className="shrink-0 text-slate-400" /><span className="truncate">{item.title}</span></button>
+            <button aria-label={`${t.delete} ${item.title}`} title={t.delete} disabled={busy === `delete-${item.id}`} onClick={() => deleteExam(item)} className="mr-2 rounded-md p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50"><Trash2 size={13} /></button>
+          </div>)}</div>
         </div>
         <div className="mt-auto rounded-2xl bg-gradient-to-br from-indigo-600 to-violet-600 p-4 text-white">
           <div className="mb-3 grid h-8 w-8 place-items-center rounded-lg bg-white/15"><Sparkles size={16} /></div>
@@ -248,8 +358,9 @@ function App() {
         </div>
         <div className="mt-4 flex items-center gap-3 border-t border-slate-100 pt-4">
           <div className="grid h-9 w-9 place-items-center rounded-full bg-amber-100 text-sm font-bold text-amber-700">T</div>
-          <div><p className="text-xs font-bold text-ink">{isKhmer ? "លោកគ្រូ/អ្នកគ្រូ" : "Teacher"}</p><p className="text-[10px] text-slate-400">Educator workspace</p></div>
+          <div className="min-w-0"><p className="truncate text-xs font-bold text-ink">{authSession.user.email}</p><p className="text-[10px] text-slate-400">Educator workspace</p></div>
           <button onClick={() => setLanguage(isKhmer ? "en" : "km")} className="ml-auto rounded-lg border border-slate-200 px-2 py-1 text-[10px] font-bold text-slate-500">{isKhmer ? "EN" : "ខ្មែរ"}</button>
+          <button aria-label="Sign out" title="Sign out" onClick={signOut} className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-rose-600"><LogOut size={15} /></button>
         </div>
       </aside>
       {mobileMenu && <button aria-label="Close menu" onClick={() => setMobileMenu(false)} className="fixed inset-0 z-20 bg-slate-900/20 lg:hidden no-print" />}
@@ -268,8 +379,8 @@ function App() {
         <div className="mx-auto max-w-[1320px] px-5 py-7 md:px-9 md:py-9">
           {error && <div role="alert" className="mb-5 flex items-start gap-2 rounded-xl border border-rose-100 bg-rose-50 px-4 py-3 text-xs leading-5 text-rose-700"><X size={15} className="mt-0.5 shrink-0" />{error}<button onClick={() => setError("")} className="ml-auto"><X size={15} /></button></div>}
           {notice && <div role="status" className="mb-5 flex items-center gap-2 rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-xs text-emerald-700"><CheckCircle2 size={15} />{notice}<button onClick={() => setNotice("")} className="ml-auto"><X size={15} /></button></div>}
-          {page === "Dashboard" && <Dashboard t={t} lessons={lessons} exams={exams} onNavigate={navigate} onOpenExam={(item) => { setExam(item); navigate("Examination Preview"); }} />}
-          {page === "Upload lesson" && <UploadPage t={t} lessons={lessons} busy={busy} onFile={uploadFile} inputRef={fileInput} />}
+          {page === "Dashboard" && <Dashboard t={t} lessons={lessons} exams={exams} busy={busy} onNavigate={navigate} onDeleteExam={deleteExam} onDeleteLesson={deleteLesson} onOpenExam={(item) => { setExam(item); navigate("Examination Preview"); }} />}
+          {page === "Upload lesson" && <UploadPage t={t} lessons={lessons} busy={busy} onFile={uploadFile} onDeleteLesson={deleteLesson} inputRef={fileInput} />}
           {page === "Generate examination" && <GeneratePage t={t} lessons={lessons} form={form} onChange={updateForm} lessonId={lessonId} setLessonId={setLessonId} customSubject={customSubject} setCustomSubject={setCustomSubject} busy={busy} onGenerate={generate} onUpload={() => fileInput.current?.click()} />}
           {page === "Examination Preview" && exam && <PreviewPage t={t} exam={exam} activeTab={activeTab} setActiveTab={setActiveTab} editing={editing} setEditing={setEditing} busy={busy} sumMarks={sumMarks} onPatch={patchQuestion} onSave={saveExam} onRegenerate={regenerate} onRegenerateKey={regenerateKey} onDownload={download} onAdd={() => { setExam((current) => ({ ...current, questions: [...current.questions, { type: "Short Answer", text: "", options: [], answer: "", explanation: "", rubric: "", marks: 1, difficulty: "Medium" }], total_marks: Number(current.total_marks) + 1 })); setEditing(exam.questions.length); }} onRemove={(index) => { const questions = exam.questions.filter((_, i) => i !== index); const removed = exam.questions[index].marks; setExam({ ...exam, questions, total_marks: Math.max(questions.length, exam.total_marks - removed) }); }} />}
           {page === "Examination Preview" && !exam && <EmptyPanel t={t} onAction={() => navigate("Generate examination")} />}
@@ -281,6 +392,52 @@ function App() {
   );
 }
 
+function SignInPage({ initialError }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(initialError);
+
+  async function submit(event) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+      if (signInError) setError(signInError.message);
+    } catch (signInError) {
+      setError(signInError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="grid min-h-screen place-items-center bg-slate-50 px-5 py-10">
+      <section className="w-full max-w-md rounded-2xl border border-slate-100 bg-white p-7 shadow-card md:p-9">
+        <div className="mb-6 flex items-center gap-3">
+          <div className="grid h-11 w-11 place-items-center rounded-xl bg-indigo-600 text-white"><BookOpen size={21} /></div>
+          <div><p className="text-lg font-extrabold text-ink">ExamGen <span className="text-indigo-600">AI</span></p><p className="text-[10px] font-semibold tracking-[.15em] text-slate-400">KHMER EDUCATION</p></div>
+        </div>
+        <h1 className="text-xl font-extrabold text-ink">Sign in</h1>
+        <p className="mt-2 text-sm text-slate-500">Use your Supabase account to access your exam workspace.</p>
+        {error && <div role="alert" className="mt-5 rounded-xl border border-rose-100 bg-rose-50 px-4 py-3 text-xs leading-5 text-rose-700">{error}</div>}
+        <form onSubmit={submit} className="mt-6 space-y-4">
+          <label className="block text-xs font-semibold text-slate-600">Email
+            <input type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} className="input mt-1.5" />
+          </label>
+          <label className="block text-xs font-semibold text-slate-600">Password
+            <input type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} className="input mt-1.5" />
+          </label>
+          <button type="submit" disabled={busy} className="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50">
+            {busy && <LoaderCircle size={16} className="animate-spin" />}{busy ? "Signing in..." : "Sign in"}
+          </button>
+        </form>
+      </section>
+    </main>
+  );
+}
+
 function SectionTitle({ eyebrow, title, description, action }) {
   return <div className="mb-7 flex flex-wrap items-end justify-between gap-4"><div>{eyebrow && <p className="mb-2 text-[10px] font-bold uppercase tracking-[.18em] text-indigo-600">{eyebrow}</p>}<h2 className="text-2xl font-extrabold tracking-tight text-ink">{title}</h2>{description && <p className="mt-2 text-sm text-slate-500">{description}</p>}</div>{action}</div>;
 }
@@ -288,7 +445,7 @@ function Button({ children, onClick, variant = "primary", disabled, icon: Icon, 
   const variants = { primary: "bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm shadow-indigo-200", secondary: "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50", ghost: "text-slate-500 hover:bg-slate-100", danger: "text-rose-600 hover:bg-rose-50" };
   return <button disabled={disabled} onClick={onClick} className={cx("inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-xs font-bold transition disabled:cursor-not-allowed disabled:opacity-55", variants[variant], className)}>{Icon && <Icon size={15} />}{children}</button>;
 }
-function Dashboard({ t, lessons, exams, onNavigate, onOpenExam }) {
+function Dashboard({ t, lessons, exams, busy, onNavigate, onDeleteExam, onDeleteLesson, onOpenExam }) {
   return <div className="animate-in">
     <div className="relative mb-8 overflow-hidden rounded-[24px] bg-gradient-to-r from-[#1a2450] via-[#393c85] to-[#675ce4] p-7 text-white md:p-10">
       <div className="relative z-[1] max-w-[590px]"><div className="mb-4 inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1.5 text-[10px] font-semibold text-indigo-100"><Sparkles size={13} /> AI-POWERED ASSESSMENT STUDIO</div>
@@ -306,12 +463,15 @@ function Dashboard({ t, lessons, exams, onNavigate, onOpenExam }) {
     <div className="grid gap-6 xl:grid-cols-[1.4fr_.8fr]">
       <div className="rounded-2xl border border-slate-100 bg-white p-5 shadow-card md:p-6">
         <div className="mb-5 flex items-center justify-between"><div><h3 className="text-sm font-bold text-ink">{t.recent}</h3><p className="mt-1 text-[11px] text-slate-400">Review, edit, or export your papers</p></div><button onClick={() => onNavigate("Generate examination")} className="rounded-lg p-2 text-indigo-600 hover:bg-indigo-50"><Plus size={17} /></button></div>
-        {exams.length ? <div className="divide-y divide-slate-100">{exams.slice(0, 5).map((item) => <button key={item.id} onClick={() => onOpenExam(item)} className="flex w-full items-center gap-3 py-3 text-left hover:bg-slate-50/70">
-          <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-indigo-50 text-indigo-600"><FileText size={16} /></div><div className="min-w-0 flex-1"><p className="truncate text-xs font-bold text-ink">{item.title}</p><p className="mt-1 text-[10px] text-slate-400">Grade {item.grade} · {item.subject} · {item.total_marks} marks</p></div><ArrowRight size={15} className="text-slate-300" />
-        </button>)}</div> : <EmptyState text={t.noExams} cta={t.create} onClick={() => onNavigate("Generate examination")} />}
+        {exams.length ? <div className="divide-y divide-slate-100">{exams.slice(0, 5).map((item) => <div key={item.id} className="flex items-center gap-2 py-3">
+          <button onClick={() => onOpenExam(item)} className="flex min-w-0 flex-1 items-center gap-3 text-left hover:bg-slate-50/70">
+            <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-indigo-50 text-indigo-600"><FileText size={16} /></div><div className="min-w-0 flex-1"><p className="truncate text-xs font-bold text-ink">{item.title}</p><p className="mt-1 text-[10px] text-slate-400">Grade {item.grade} · {item.subject} · {item.total_marks} marks</p></div><ArrowRight size={15} className="text-slate-300" />
+          </button>
+          <button aria-label={`${t.delete} ${item.title}`} title={t.delete} disabled={busy === `delete-${item.id}`} onClick={() => onDeleteExam(item)} className="rounded-lg p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50"><Trash2 size={15} /></button>
+        </div>)}</div> : <EmptyState text={t.noExams} cta={t.create} onClick={() => onNavigate("Generate examination")} />}
       </div>
       <div className="rounded-2xl border border-slate-100 bg-white p-5 shadow-card md:p-6"><div className="mb-5 flex items-center justify-between"><div><h3 className="text-sm font-bold text-ink">{t.lessons}</h3><p className="mt-1 text-[11px] text-slate-400">{lessons.length} source {lessons.length === 1 ? "document" : "documents"}</p></div><button onClick={() => onNavigate("Upload lesson")} className="rounded-lg p-2 text-indigo-600 hover:bg-indigo-50"><Upload size={16} /></button></div>
-        {lessons.length ? <div className="space-y-3">{lessons.slice(0, 4).map((lesson) => <div key={lesson.id} className="flex items-center gap-3"><div className="grid h-9 w-9 place-items-center rounded-xl bg-emerald-50 text-emerald-600"><FileText size={16} /></div><div className="min-w-0 flex-1"><p className="truncate text-xs font-bold text-ink">{lesson.filename}</p><p className="text-[10px] text-slate-400">{(lesson.character_count || 0).toLocaleString()} characters</p></div></div>)}</div> : <EmptyState text={t.noLessons} cta={t.upload} onClick={() => onNavigate("Upload lesson")} />}
+        {lessons.length ? <div className="space-y-3">{lessons.slice(0, 4).map((lesson) => <div key={lesson.id} className="flex items-center gap-3"><div className="grid h-9 w-9 place-items-center rounded-xl bg-emerald-50 text-emerald-600"><FileText size={16} /></div><div className="min-w-0 flex-1"><p className="truncate text-xs font-bold text-ink">{lesson.filename}</p><p className="text-[10px] text-slate-400">{(lesson.character_count || 0).toLocaleString()} characters</p></div><button aria-label={`${t.delete} ${lesson.filename}`} title={t.delete} disabled={busy === `delete-lesson-${lesson.id}`} onClick={() => onDeleteLesson(lesson)} className="rounded-lg p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50"><Trash2 size={14} /></button></div>)}</div> : <EmptyState text={t.noLessons} cta={t.upload} onClick={() => onNavigate("Upload lesson")} />}
       </div>
     </div>
   </div>;
@@ -325,7 +485,7 @@ function EmptyState({ text, cta, onClick }) {
 }
 function EmptyPanel({ t, onAction }) { return <div className="rounded-2xl border border-slate-100 bg-white p-8 shadow-card"><EmptyState text={t.noExams} cta={t.generateBtn} onClick={onAction} /></div>; }
 
-function UploadPage({ t, lessons, busy, onFile, inputRef }) {
+function UploadPage({ t, lessons, busy, onFile, onDeleteLesson, inputRef }) {
   const [drag, setDrag] = useState(false);
   return <div><SectionTitle eyebrow="SOURCE MATERIALS" title={t.upload} description="Upload teaching materials to ground your AI-generated questions in your lesson." />
     <div onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)} onDrop={(e) => { e.preventDefault(); setDrag(false); onFile(e.dataTransfer.files?.[0]); }}
@@ -336,13 +496,14 @@ function UploadPage({ t, lessons, busy, onFile, inputRef }) {
       <Button className="mt-5" icon={Upload} disabled={busy === "upload"}>Browse files</Button>
     </div>
     <div className="mt-7 rounded-2xl border border-slate-100 bg-white p-5 shadow-card md:p-6"><h3 className="mb-4 text-sm font-bold text-ink">{t.lessons}<span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] text-slate-500">{lessons.length}</span></h3>
-      {lessons.length ? <div className="divide-y divide-slate-100">{lessons.map((lesson) => <div key={lesson.id} className="flex items-center gap-3 py-3"><div className="grid h-10 w-10 place-items-center rounded-xl bg-emerald-50 text-emerald-600"><FileText size={17} /></div><div className="min-w-0 flex-1"><p className="truncate text-xs font-bold text-ink">{lesson.filename}</p><p className="mt-1 text-[10px] text-slate-400">{(lesson.character_count || 0).toLocaleString()} characters extracted</p></div><CheckCircle2 size={16} className="text-emerald-500" /></div>)}</div> : <EmptyState text={t.noLessons} cta="Upload your first lesson" onClick={() => inputRef.current?.click()} />}
+      {lessons.length ? <div className="divide-y divide-slate-100">{lessons.map((lesson) => <div key={lesson.id} className="flex items-center gap-3 py-3"><div className="grid h-10 w-10 place-items-center rounded-xl bg-emerald-50 text-emerald-600"><FileText size={17} /></div><div className="min-w-0 flex-1"><p className="truncate text-xs font-bold text-ink">{lesson.filename}</p><p className="mt-1 text-[10px] text-slate-400">{(lesson.character_count || 0).toLocaleString()} characters extracted</p></div><button aria-label={`${t.delete} ${lesson.filename}`} title={t.delete} disabled={busy === `delete-lesson-${lesson.id}`} onClick={() => onDeleteLesson(lesson)} className="rounded-lg p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-50"><Trash2 size={15} /></button></div>)}</div> : <EmptyState text={t.noLessons} cta="Upload your first lesson" onClick={() => inputRef.current?.click()} />}
     </div>
   </div>;
 }
 
 function GeneratePage({ t, lessons, form, onChange, lessonId, setLessonId, customSubject, setCustomSubject, busy, onGenerate, onUpload }) {
   const toggleType = (type) => onChange("question_types", form.question_types.includes(type) ? form.question_types.filter((item) => item !== type) : [...form.question_types, type]);
+  const selectedLesson = lessons.find((lesson) => lesson.id === lessonId);
   return <div><SectionTitle eyebrow="EXAM BUILDER" title={t.generate} description={t.generateHint} />
     <div className="grid gap-6 xl:grid-cols-[1fr_320px]">
       <div className="space-y-5">
@@ -371,7 +532,9 @@ function GeneratePage({ t, lessons, form, onChange, lessonId, setLessonId, custo
         <div className="mb-4 grid h-10 w-10 place-items-center rounded-xl bg-indigo-600 text-white"><Sparkles size={18} /></div><h3 className="text-sm font-bold text-ink">Ready to create</h3><p className="mt-1 text-xs leading-5 text-slate-500">AI-generated content stays grounded in your uploaded lesson. Review and approve before sharing with students.</p>
         <div className="my-5 space-y-3 border-y border-indigo-100 py-4 text-[11px] text-slate-600">
           <SummaryRow label={t.grade} value={`Grade ${form.grade}`} /><SummaryRow label={t.subject} value={form.subject === "Other" ? customSubject || "—" : form.subject} /><SummaryRow label={t.questions} value={form.question_count} /><SummaryRow label={t.total} value={`${form.total_marks} marks`} />
+          <SummaryRow label="Lesson" value={selectedLesson?.filename || "Not selected"} />
         </div>
+        {!selectedLesson && <Button variant="secondary" onClick={onUpload} className="mb-3 w-full" icon={Upload}>Upload a lesson to continue</Button>}
         <Button onClick={onGenerate} disabled={busy === "generate" || !lessonId || !form.question_types.length} className="w-full" icon={busy === "generate" ? LoaderCircle : Sparkles}>{busy === "generate" ? t.generating : t.generateBtn}</Button>
         <p className="mt-3 text-center text-[10px] leading-4 text-slate-400">All generated content is a draft for teacher review.</p>
       </div>
