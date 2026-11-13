@@ -24,15 +24,15 @@ class ApiError(RuntimeError):
 
 
 def supabase_auth_request(path: str, payload: dict[str, str]) -> dict[str, Any]:
-    if not settings.supabase_url or not settings.supabase_publishable_key:
+    if not settings.supabase_url or not settings.supabase_key:
         raise ApiError(
             "Supabase sign-in is not configured. Set SUPABASE_URL and "
-            "SUPABASE_PUBLISHABLE_KEY in backend/.env."
+            "SUPABASE_PUBLISHABLE_KEY (or SUPABASE_KEY) in backend/.env."
         )
     try:
         response = httpx.post(
             f"{settings.supabase_url.rstrip('/')}/auth/v1/{path}",
-            headers={"apikey": settings.supabase_publishable_key},
+            headers={"apikey": settings.supabase_key},
             json=payload,
             timeout=httpx.Timeout(15, connect=5),
         )

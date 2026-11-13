@@ -1,13 +1,13 @@
 # Khmer ExamGen AI
 
-A teacher-reviewed exam generator with a React dashboard and a FastAPI backend. Uploaded lesson files are extracted and used as the primary source for AI-generated questions. The service stores lesson text and exams in SQLite and exports student papers and answer keys separately.
+A teacher-reviewed exam generator with a React dashboard and a FastAPI backend. Uploaded lesson files are extracted and used as the primary source for AI-generated questions. The service stores lesson text and exams in Supabase PostgreSQL when `DATABASE_URL` is configured, and otherwise uses SQLite for local development. Student papers and answer keys are exported separately.
 
 ## Architecture
 
 ```text
 frontend/                 React + Vite + Tailwind teacher dashboard
 backend/app/main.py       FastAPI application and HTTP routes
-backend/app/database.py   SQLite persistence for lessons and exams
+backend/app/database.py   SQLAlchemy PostgreSQL/SQLite persistence for lessons and exams
 backend/app/documents.py  PDF, DOCX, PPTX, and TXT extraction
 backend/app/generator.py  OpenAI-compatible LLM integration and validation
 backend/app/exporters.py  DOCX and PDF generation
@@ -25,7 +25,7 @@ Requirements: Python 3.10+ and Node.js 18+.
    .\.venv\Scripts\Activate.ps1
    pip install -r requirements.txt
    Copy-Item .env.example .env
-   # Set LLM_API_KEY in .env to enable AI generation
+   # Set DATABASE_URL to use Supabase PostgreSQL and LLM_API_KEY to enable AI generation
    uvicorn app.main:app --reload
    ```
 
@@ -54,15 +54,73 @@ The API documentation is available at http://localhost:8000/docs. Without an LLM
 
 ## Supabase authentication
 
-The React and Streamlit interfaces sign in with Supabase Auth. Create teacher accounts in the Supabase project's Auth users settings, enable the email/password provider, and configure these backend values in `backend/.env`:
+Email and password sign-up and login use Supabase Auth; credentials are stored in Supabase's `auth.users`, not in the application's lessons/exams database. In the Supabase dashboard, go to **Authentication → Sign In / Providers → Email**, enable Email, and turn **Confirm email** off for development. Set **Site URL** to `http://localhost:5173`.
+
+Configure these values in `backend/.env`:
 
 ```text
-SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_URL=https://slehhdvtfivgcuaguvib.supabase.co
 SUPABASE_PUBLISHABLE_KEY=your-publishable-key
-SUPABASE_JWKS_URL=https://your-project.supabase.co/auth/v1/.well-known/jwks.json
 ```
 
-Set the matching `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` in `frontend/.env`. The API validates bearer access tokens against the project's JWKS and requires authentication for every API route except `/api/health`. Lessons and exams are isolated by authenticated user. Existing SQLite rows without an owner remain stored but are hidden from all users; assign an owner manually before making legacy rows available. Keep any Supabase secret key server-side; it is not needed for this JWT verification flow and must never be placed in frontend variables.
+Set `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` in `frontend/.env` using the same project URL and publishable key. These frontend variables are public by design; never use a Supabase service-role/secret key in the browser. The backend verifies each bearer token with Supabase Auth's `get_user` endpoint.
+
+`GET /me` returns the authenticated user's ID and email. Authentication is required for:
+
+- `GET /me`
+- `GET /api/lessons`, `POST /api/lessons`, `DELETE /api/lessons/{lesson_id}`
+- `GET /api/exams`, `POST /api/chat`, `POST /api/exams/generate`
+- `GET /api/exams/{exam_id}`, `PUT /api/exams/{exam_id}`, `DELETE /api/exams/{exam_id}`
+- `POST /api/exams/{exam_id}/questions/regenerate`
+- `POST /api/exams/{exam_id}/answer-key/regenerate`
+- `GET /api/exams/{exam_id}/export`
+
+`GET /api/health` remains public. Lessons and exams are isolated by authenticated user. In SQLite, rows without an owner remain stored but are hidden from all users; assign an owner manually before making legacy rows available.
+
+To run and test the authentication flow:
+
+1. In `backend/.env`, set `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, and (if using PostgreSQL storage) `DATABASE_URL`.
+2. In `frontend/.env`, set `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY`.
+3. Start the backend in PowerShell:
+
+   ```powershell
+   cd backend
+   if (!(Test-Path .env)) { Copy-Item .env.example .env }
+   .\.venv\Scripts\Activate.ps1
+   pip install -r requirements.txt
+   uvicorn app.main:app --reload
+   ```
+
+4. In another terminal, start the frontend:
+
+   ```powershell
+   cd frontend
+   if (!(Test-Path .env)) { Copy-Item .env.example .env }
+   npm install
+   npm run dev
+   ```
+
+5. Open `http://localhost:5173`, choose **Sign up**, and register with an email and password of at least six characters. With email confirmation disabled, the new account should be signed in immediately. Verify it under **Authentication → Users** in Supabase.
+6. Log out, then log back in with the same credentials.
+7. In the browser developer console, get the current access token with:
+
+   ```js
+   const { data } = await (await import("/src/supabaseClient.js")).supabase.auth.getSession();
+   data.session.access_token
+   ```
+
+   Call `/me` from PowerShell, replacing the placeholder with that token:
+
+   ```powershell
+   $token = "PASTE_ACCESS_TOKEN_HERE"
+   Invoke-RestMethod -Uri "http://localhost:8000/me" -Headers @{ Authorization = "Bearer $token" }
+   ```
+
+   The response should contain the signed-in user's `id` and `email`.
+
+## Supabase database
+
+Set `DATABASE_URL` in `backend/.env` to the Supabase transaction-mode pooler connection string (port `6543`) shown in `backend/.env.example`. Replace `YOUR-PASSWORD` with the database password; percent-encode special characters in the password before putting it in the URL. The SQLAlchemy engine enables SSL and disables prepared statements for compatibility with transaction pooling. Keep this connection string server-side; do not put it in `frontend/.env` or commit it. Existing SQLite data is not copied automatically. If `DATABASE_URL` is unset, the backend uses SQLite for local development. This backend initializes its schema at startup and does not currently use a separate migration URL.
 
 ## AI configuration
 
@@ -70,7 +128,7 @@ Set `LLM_API_KEY`, `LLM_MODEL`, and optionally `LLM_BASE_URL` in `backend/.env`.
 
 ## Supabase client
 
-The frontend exports a Supabase client from `frontend/src/utils/supabase.js`. Set `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` in `frontend/.env` (see `frontend/.env.example`). These Vite variables are public in the browser; protect tables with appropriate Supabase Row Level Security policies. The app's lesson and exam data continues to use the FastAPI/SQLite backend.
+The frontend exports a Supabase client from `frontend/src/supabaseClient.js`. Set `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` in `frontend/.env` (see `frontend/.env.example`). These Vite variables are public in the browser; protect directly exposed tables with appropriate Supabase Row Level Security policies. Lesson and exam data is accessed through the FastAPI backend and stored in PostgreSQL when `DATABASE_URL` is configured.
 
 ## Khmer exports
 

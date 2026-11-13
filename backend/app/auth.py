@@ -1,36 +1,18 @@
-from functools import lru_cache
 from typing import Any
 
-import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jwt import PyJWKClient
-from jwt.exceptions import PyJWKClientConnectionError, PyJWKClientError, PyJWTError
 from starlette.concurrency import run_in_threadpool
+from supabase_auth.errors import AuthApiError, AuthRetryableError
 
 from app.config import settings
+from utils.supabase_client import create_supabase_client
 
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
-def _issuer() -> str | None:
-    if not settings.supabase_url:
-        return None
-    return f"{settings.supabase_url.rstrip('/')}/auth/v1"
-
-
-@lru_cache(maxsize=1)
-def _jwks_client() -> PyJWKClient | None:
-    jwks_url = settings.supabase_jwks_url
-    if not jwks_url and settings.supabase_url:
-        jwks_url = f"{settings.supabase_url.rstrip('/')}/auth/v1/.well-known/jwks.json"
-    if not jwks_url:
-        return None
-    return PyJWKClient(jwks_url, cache_jwk_set=True)
-
-
-async def require_authenticated_user(
+async def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> dict[str, Any]:
     if credentials is None or credentials.scheme.lower() != "bearer":
@@ -40,43 +22,33 @@ async def require_authenticated_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    issuer = _issuer()
-    client = _jwks_client()
-    if issuer is None or client is None:
+    if not settings.supabase_url or not settings.supabase_key:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Supabase authentication is not configured. Set SUPABASE_URL and SUPABASE_JWKS_URL in backend/.env.",
+            detail="Supabase authentication is not configured. Set SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY (or SUPABASE_KEY) in backend/.env.",
         )
 
     try:
-        signing_key = await run_in_threadpool(
-            client.get_signing_key_from_jwt, credentials.credentials
+        response = await run_in_threadpool(
+            create_supabase_client().auth.get_user, credentials.credentials
         )
-    except PyJWKClientConnectionError as error:
+    except AuthApiError as error:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired Supabase access token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from error
+    except AuthRetryableError as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Could not reach Supabase to verify the access token.",
         ) from error
-    except (PyJWKClientError, PyJWTError) as error:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired Supabase access token.",
-            headers={"WWW-Authenticate": "Bearer"},
-        ) from error
 
-    try:
-        claims = jwt.decode(
-            credentials.credentials,
-            signing_key.key,
-            algorithms=[signing_key.algorithm_name],
-            audience="authenticated",
-            issuer=issuer,
-            options={"require": ["exp", "iat", "sub"]},
-        )
-    except PyJWTError as error:
+    user = response.user if response else None
+    if user is None or not user.id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired Supabase access token.",
             headers={"WWW-Authenticate": "Bearer"},
-        ) from error
-    return claims
+        )
+    return {"id": user.id, "sub": user.id, "email": user.email}

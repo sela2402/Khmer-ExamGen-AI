@@ -1,25 +1,14 @@
-import os
-from dotenv import load_dotenv
+from functools import lru_cache
+
 from supabase import create_client
 
-# Load environment variables
-load_dotenv()
+from app.config import settings
 
+
+@lru_cache(maxsize=1)
 def create_supabase_client():
-
-    supabase_url = os.getenv("SUPABASE_URL")
-    supabase_key = os.getenv("SUPABASE_PUBLISHABLE_KEY")
-
-    if not supabase_url:
-        raise ValueError("SUPABASE_URL is missing!")
-
-    if not supabase_key:
-        raise ValueError("SUPABASE_PUBLISHABLE_KEY is missing!")
-
-    # Connect to Supabase
-    supabase = create_client(
-        supabase_url,
-        supabase_key
-    )
-
-    return supabase
+    if not settings.supabase_url:
+        raise ValueError("SUPABASE_URL is missing.")
+    if not settings.supabase_key:
+        raise ValueError("SUPABASE_PUBLISHABLE_KEY (or SUPABASE_KEY) is missing.")
+    return create_client(settings.supabase_url, settings.supabase_key)

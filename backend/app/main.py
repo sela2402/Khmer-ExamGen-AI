@@ -2,7 +2,7 @@ from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
-from app.auth import require_authenticated_user
+from app.auth import get_current_user
 from app.config import settings
 from app.database import (
     create_exam,
@@ -46,15 +46,20 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/me")
+def read_current_user(user: dict = Depends(get_current_user)) -> dict[str, str | None]:
+    return {"id": user["id"], "email": user["email"]}
+
+
 @app.get("/api/lessons")
-def lessons(user: dict = Depends(require_authenticated_user)) -> list[dict]:
+def lessons(user: dict = Depends(get_current_user)) -> list[dict]:
     return list_lessons(user["sub"])
 
 
 @app.post("/api/lessons", status_code=201)
 async def upload_lesson(
     file: UploadFile = File(...),
-    user: dict = Depends(require_authenticated_user),
+    user: dict = Depends(get_current_user),
 ) -> dict:
     filename = file.filename or "lesson"
     if not filename.lower().endswith(tuple(SUPPORTED_EXTENSIONS)):
@@ -78,7 +83,7 @@ async def upload_lesson(
 
 @app.delete("/api/lessons/{lesson_id}", status_code=204)
 def remove_lesson(
-    lesson_id: str, user: dict = Depends(require_authenticated_user)
+    lesson_id: str, user: dict = Depends(get_current_user)
 ) -> Response:
     if not delete_lesson(lesson_id, user["sub"]):
         raise HTTPException(status_code=404, detail="Lesson not found.")
@@ -86,13 +91,13 @@ def remove_lesson(
 
 
 @app.get("/api/exams")
-def exams(user: dict = Depends(require_authenticated_user)) -> list[dict]:
+def exams(user: dict = Depends(get_current_user)) -> list[dict]:
     return list_exams(user["sub"])
 
 
 @app.post("/api/chat")
 async def teacher_chat(
-    request: ChatRequest, user: dict = Depends(require_authenticated_user)
+    request: ChatRequest, user: dict = Depends(get_current_user)
 ) -> dict[str, str]:
     lesson_text = ""
     if request.lesson_id:
@@ -109,7 +114,7 @@ async def teacher_chat(
 
 @app.post("/api/exams/generate", status_code=201)
 async def create_generated_exam(
-    request: GenerateRequest, user: dict = Depends(require_authenticated_user)
+    request: GenerateRequest, user: dict = Depends(get_current_user)
 ) -> dict:
     lesson = get_lesson(request.lesson_id, user["sub"])
     if not lesson:
@@ -122,7 +127,7 @@ async def create_generated_exam(
 
 
 @app.get("/api/exams/{exam_id}")
-def read_exam(exam_id: str, user: dict = Depends(require_authenticated_user)) -> dict:
+def read_exam(exam_id: str, user: dict = Depends(get_current_user)) -> dict:
     exam = get_exam(exam_id, user["sub"])
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found.")
@@ -133,7 +138,7 @@ def read_exam(exam_id: str, user: dict = Depends(require_authenticated_user)) ->
 def save_exam(
     exam_id: str,
     update: ExamUpdate,
-    user: dict = Depends(require_authenticated_user),
+    user: dict = Depends(get_current_user),
 ) -> dict:
     data = update.model_dump()
     try:
@@ -148,7 +153,7 @@ def save_exam(
 
 @app.delete("/api/exams/{exam_id}", status_code=204)
 def remove_exam(
-    exam_id: str, user: dict = Depends(require_authenticated_user)
+    exam_id: str, user: dict = Depends(get_current_user)
 ) -> Response:
     if not delete_exam(exam_id, user["sub"]):
         raise HTTPException(status_code=404, detail="Exam not found.")
@@ -159,7 +164,7 @@ def remove_exam(
 async def regenerate_exam_question(
     exam_id: str,
     request: RegenerateQuestionRequest,
-    user: dict = Depends(require_authenticated_user),
+    user: dict = Depends(get_current_user),
 ) -> dict:
     exam = get_exam(exam_id, user["sub"])
     lesson = get_lesson(request.lesson_id, user["sub"])
@@ -173,7 +178,7 @@ async def regenerate_exam_question(
 
 @app.post("/api/exams/{exam_id}/answer-key/regenerate")
 async def regenerate_exam_answer_key(
-    exam_id: str, user: dict = Depends(require_authenticated_user)
+    exam_id: str, user: dict = Depends(get_current_user)
 ) -> dict:
     exam = get_exam(exam_id, user["sub"])
     if not exam:
@@ -198,7 +203,7 @@ def download_exam(
     exam_id: str,
     format: str = Query(pattern="^(pdf|docx)$"),
     document: str = Query(pattern="^(paper|answer_key)$"),
-    user: dict = Depends(require_authenticated_user),
+    user: dict = Depends(get_current_user),
 ) -> Response:
     exam = get_exam(exam_id, user["sub"])
     if not exam:

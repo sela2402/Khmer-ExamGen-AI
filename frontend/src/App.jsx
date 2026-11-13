@@ -4,10 +4,12 @@ import {
   ClipboardList, Clock3, FileText, GraduationCap, LayoutDashboard, LoaderCircle, LogOut, Menu,
   MessageCircle, Plus, RefreshCw, Sparkles, Trash2, Upload, X,
 } from "lucide-react";
-import { supabase } from "./utils/supabase";
+import { useAuth } from "./AuthContext";
+import AuthForm from "./AuthForm";
+import { apiFetch as api } from "./utils/apiFetch";
 
 const questionTypes = ["Multiple Choice", "True or False", "Fill in the Blanks", "Short Answer", "Essay", "Problem Solving"];
-const subjects = ["Khmer Literature", "Mathematics", "Physics", "Chemistry", "Biology", "History", "Geography", "English", "Other"];
+const subjects = ["Khmer Literature", "Mathematics", "Phycs", "Chemistry", "Biology", "History", "Geography", "English", "Other"];
 const initialForm = {
   title: "Mid-term Examination", grade: "9", subject: "Mathematics", total_marks: "50",
   duration_minutes: "90", question_count: "10", difficulty: "Mixed",
@@ -64,50 +66,18 @@ const copy = {
   },
 };
 
-async function api(url, options = {}) {
-  let response;
-  try {
-    const { data, error } = await supabase.auth.getSession();
-    if (error) throw new Error(error.message);
-    const headers = new Headers(options.headers);
-    if (data.session?.access_token) {
-      headers.set("Authorization", `Bearer ${data.session.access_token}`);
-    }
-    response = await fetch(url, { ...options, headers });
-  } catch (error) {
-    if (error instanceof TypeError) {
-      throw new Error("Cannot reach the API. Start it with `uvicorn app.main:app --reload` from the backend folder.");
-    }
-    throw error;
-  }
-  if (!response.ok) {
-    const isJson = response.headers.get("content-type")?.includes("application/json");
-    const data = isJson ? await response.json() : {};
-    const detail = data.detail;
-    if (!detail && response.status >= 500) {
-      throw new Error("The API server is unavailable. Start it with `uvicorn app.main:app --reload` from the backend folder.");
-    }
-    const message = typeof detail === "string"
-      ? detail
-      : Array.isArray(detail)
-        ? detail.map((item) => {
-          const location = Array.isArray(item.loc) ? item.loc.filter((part) => part !== "body").join(" → ") : "";
-          return [location, item.msg || JSON.stringify(item)].filter(Boolean).join(": ");
-        }).join("; ")
-        : detail && typeof detail === "object"
-          ? detail.message || detail.error?.message || JSON.stringify(detail)
-          : `Request failed (${response.status})`;
-    throw new Error(message);
-  }
-  return response;
-}
-
 const cx = (...values) => values.filter(Boolean).join(" ");
 
 function App() {
-  const [authSession, setAuthSession] = useState(null);
-  const [authLoading, setAuthLoading] = useState(true);
-  const [authError, setAuthError] = useState("");
+  const {
+    user,
+    session: authSession,
+    loading: authLoading,
+    error: authError,
+    signOut: authSignOut,
+    authNotice,
+    setAuthNotice,
+  } = useAuth();
   const [language, setLanguage] = useState("en");
   const t = copy[language];
   const [page, setPage] = useState("Dashboard");
@@ -132,23 +102,10 @@ function App() {
   const sumMarks = useMemo(() => exam?.questions?.reduce((sum, q) => sum + Number(q.marks || 0), 0) || 0, [exam]);
 
   useEffect(() => {
-    let active = true;
-    supabase.auth.getSession().then(({ data, error: sessionError }) => {
-      if (!active) return;
-      if (sessionError) setAuthError(sessionError.message);
-      setAuthSession(data.session);
-      setAuthLoading(false);
-    });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setAuthSession(session);
-      setAuthError("");
-      setAuthLoading(false);
-    });
-    return () => {
-      active = false;
-      subscription.unsubscribe();
-    };
-  }, []);
+    if (!authNotice) return;
+    setNotice(authNotice);
+    setAuthNotice("");
+  }, [authNotice, setAuthNotice]);
 
   async function refresh() {
     try {
@@ -173,8 +130,12 @@ function App() {
   useEffect(() => { chatEnd.current?.scrollIntoView({ behavior: "smooth" }); }, [chatMessages]);
 
   async function signOut() {
-    const { error: signOutError } = await supabase.auth.signOut();
-    if (signOutError) setError(signOutError.message);
+    try {
+      await authSignOut();
+      setError("");
+    } catch (signOutError) {
+      setError(signOutError.message);
+    }
   }
 
   function navigate(nextPage) {
@@ -324,8 +285,8 @@ function App() {
   if (authLoading) {
     return <div className="grid min-h-screen place-items-center text-sm text-slate-500">Checking your session...</div>;
   }
-  if (!authSession) {
-    return <SignInPage initialError={authError} />;
+  if (!user) {
+    return <AuthForm initialError={authError} />;
   }
 
   return (
@@ -338,7 +299,7 @@ function App() {
         <div className="mt-10">
           <p className="mb-3 px-3 text-[10px] font-bold uppercase tracking-[.17em] text-slate-400">{isKhmer ? "ម៉ឺនុយ" : "Workspace"}</p>
           <nav className="space-y-1">
-            {nav.map(({ name, icon: Icon }, index) => <button key={name} onClick={() => navigate(name)} className={cx("flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[13px] font-semibold transition", activeNav === name ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50 hover:text-ink")}>
+            {nav.map(({ name, icon: Icon }, index) => <button key={name} onClick={() => navigate(name === "Generate exam" ? "Generate examination" : name)} className={cx("flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[13px] font-semibold transition", activeNav === name ? "bg-indigo-50 text-indigo-700" : "text-slate-500 hover:bg-slate-50 hover:text-ink")}>
               <Icon size={17} strokeWidth={2} /><span>{t.nav[index]}</span>{name === "Chat with AI" && <span className="ml-auto rounded-full bg-emerald-100 px-2 py-0.5 text-[9px] font-bold text-emerald-700">AI</span>}
             </button>)}
           </nav>
@@ -358,7 +319,7 @@ function App() {
         </div>
         <div className="mt-4 flex items-center gap-3 border-t border-slate-100 pt-4">
           <div className="grid h-9 w-9 place-items-center rounded-full bg-amber-100 text-sm font-bold text-amber-700">T</div>
-          <div className="min-w-0"><p className="truncate text-xs font-bold text-ink">{authSession.user.email}</p><p className="text-[10px] text-slate-400">Educator workspace</p></div>
+          <div className="min-w-0"><p className="truncate text-xs font-bold text-ink">{user.email}</p><p className="text-[10px] text-slate-400">Educator workspace</p></div>
           <button onClick={() => setLanguage(isKhmer ? "en" : "km")} className="ml-auto rounded-lg border border-slate-200 px-2 py-1 text-[10px] font-bold text-slate-500">{isKhmer ? "EN" : "ខ្មែរ"}</button>
           <button aria-label="Sign out" title="Sign out" onClick={signOut} className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-rose-600"><LogOut size={15} /></button>
         </div>
@@ -389,52 +350,6 @@ function App() {
         </div>
       </main>
     </div>
-  );
-}
-
-function SignInPage({ initialError }) {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(initialError);
-
-  async function submit(event) {
-    event.preventDefault();
-    setBusy(true);
-    setError("");
-    try {
-      const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
-      if (signInError) setError(signInError.message);
-    } catch (signInError) {
-      setError(signInError.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <main className="grid min-h-screen place-items-center bg-slate-50 px-5 py-10">
-      <section className="w-full max-w-md rounded-2xl border border-slate-100 bg-white p-7 shadow-card md:p-9">
-        <div className="mb-6 flex items-center gap-3">
-          <div className="grid h-11 w-11 place-items-center rounded-xl bg-indigo-600 text-white"><BookOpen size={21} /></div>
-          <div><p className="text-lg font-extrabold text-ink">ExamGen <span className="text-indigo-600">AI</span></p><p className="text-[10px] font-semibold tracking-[.15em] text-slate-400">KHMER EDUCATION</p></div>
-        </div>
-        <h1 className="text-xl font-extrabold text-ink">Sign in</h1>
-        <p className="mt-2 text-sm text-slate-500">Use your Supabase account to access your exam workspace.</p>
-        {error && <div role="alert" className="mt-5 rounded-xl border border-rose-100 bg-rose-50 px-4 py-3 text-xs leading-5 text-rose-700">{error}</div>}
-        <form onSubmit={submit} className="mt-6 space-y-4">
-          <label className="block text-xs font-semibold text-slate-600">Email
-            <input type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} className="input mt-1.5" />
-          </label>
-          <label className="block text-xs font-semibold text-slate-600">Password
-            <input type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} className="input mt-1.5" />
-          </label>
-          <button type="submit" disabled={busy} className="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50">
-            {busy && <LoaderCircle size={16} className="animate-spin" />}{busy ? "Signing in..." : "Sign in"}
-          </button>
-        </form>
-      </section>
-    </main>
   );
 }
 
